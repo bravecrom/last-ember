@@ -1,30 +1,59 @@
 #!/usr/bin/env node
 /*
  * 레벨 검증기 — 게임과 같은 물리 코드로 가능한 점프를 모두 시뮬레이션해
- * 시작점에서 별등대까지 갈 수 있는지, 각 점프가 얼마나 어려운지 확인한다.
+ * 시작점에서 별등대까지 갈 수 있는지, 각 점프가 얼마나 어려운지, 빗나가면 얼마나 떨어지는지 확인한다.
  *
  * 점프 하나 = 출발 위치 x 방향(←↑→) x 차지 x 공중 조작(없음/←/→ 계속 누름) x 출발 시각.
  * 움직이는 발판이나 돌풍이 있는 화면(과 그 위아래 화면)에서는 출발 시각을 16프레임 간격으로 바꿔 본다.
  * 무너지는 돌 위에서는 남은 시간 안에 걷고 차지해야 하므로, 착지 위치와 남은 시간을 함께 기억한다.
  *
- *   node tools/validate-levels.js           요약 + 화면별 도달 지도
- *   node tools/validate-levels.js -q        요약만
- *   node tools/validate-levels.js --edges N 화면 N에서 출발하는 모든 이동
+ *   node tools/validate-levels.js             요약 + 화면별 도달 지도
+ *   node tools/validate-levels.js -q          요약만
+ *   node tools/validate-levels.js --edges N   화면 N(쉼표로 여럿)에서 출발하는 모든 이동
+ *   node tools/validate-levels.js --keeper    등불지기 모드(공중 조작 없음)로 검증
+ *   node tools/validate-levels.js --dark      꺼진 탑(2회차) 규칙으로 검증
+ *   node tools/validate-levels.js --falls     추락 지도: 가장 쉬운 경로의 점프를 살짝 빗나가면 어디로 떨어지는지
+ *   node tools/validate-levels.js --map F     커스텀 맵 파일(JSON)을 검증 (--stamp: 통과하면 파일에 검증 표시를 쓴다)
+ *   node tools/validate-levels.js --export F  기본 탑을 커스텀 맵 형식(JSON)으로 내보낸다 (맵 만들기 견본)
  *
  * 지도 기호:  ^ 도달한 발판 위   x 도달 못 한 발판 위   = 움직이는 발판 출발 위치   - 도착 위치
  * 어려움 수치: 그 이동에 성공하는 (위치·방향·차지·공중 조작) 조합 수를 출발 시각 하나당으로 환산한 값.
  */
 'use strict';
+const fs = require('fs');
 const Ph = require('../src/physics.js');
 const L = require('../src/levels.js');
 const { TILE, ROWS, CYCLE, P, World, createPlayer, step, overlaps, groundUnder, T_ICE, T_CRUMBLE } = Ph;
 
-const quiet = process.argv.includes('-q');
+const argv = process.argv;
+const arg = (name) => { const i = argv.indexOf(name); return i > 0 ? argv[i + 1] : null; };
+const quiet = argv.includes('-q');
+const KEEPER = argv.includes('--keeper'), DARK = argv.includes('--dark'), FALLS = argv.includes('--falls');
+const MAP_FILE = arg('--map');
+
+if (arg('--export')) {
+  const out = { name: '마지막 불씨 — 기본 탑', author: '', screens: L.SCREENS };
+  fs.writeFileSync(arg('--export'), JSON.stringify(out, null, 1));
+  console.log(`기본 탑(${L.SCREENS.length}개 화면)을 ${arg('--export')}에 내보냈습니다.`);
+  process.exit(0);
+}
+
+let SCREENS = L.SCREENS, customMap = null;
+if (MAP_FILE) {
+  customMap = JSON.parse(fs.readFileSync(MAP_FILE, 'utf8'));
+  SCREENS = customMap.screens;
+  const zones = Object.keys(L.ZONES);
+  SCREENS.forEach((s, i) => { if (!zones.includes(s.zone)) { console.error(`화면 ${i}: zone은 ${zones.join(', ')} 중 하나여야 합니다`); process.exit(1); } });
+}
+Ph.setRules({ air: !KEEPER });
+const AIRS = KEEPER ? [0] : [-1, 0, 1];
+console.log(`규칙: ${KEEPER ? '등불지기 모드 (공중 조작 없음)' : '이야기 모드 (공중 조작)'}${DARK ? ' · 꺼진 탑' : ''}${MAP_FILE ? ` · 커스텀 맵 ${MAP_FILE}` : ''}`);
+
 const t0 = Date.now();
-const world = new World(L.SCREENS);
+const world = new World(SCREENS, { dark: DARK });
 const COLS = Ph.COLS;
 
-const timed = L.SCREENS.map((s) => !!((s.wind && s.gust) || (s.movers && s.movers.length)));
+const timed = SCREENS.map((s) => !!((s.wind && s.gust) || (s.movers && s.movers.length)));
 const nearTimed = (sc) => timed[sc] || !!timed[sc - 1] || !!timed[sc + 1];
 const PHASES = [];
 for (let t = 0; t < CYCLE; t += 16) PHASES.push(t);
@@ -101,11 +130,12 @@ let sensitive = false;
 function markTime(p) {
   if (sensitive) return;
   if (p.plat) { sensitive = true; return; }
-  if (!p.onGround) { const sc = L.SCREENS[world.screenAt(p.y + P.H / 2)]; if (sc.gust && sc.wind) { sensitive = true; return; } }
+  if (!p.onGround) { const sc = SCREENS[world.screenAt(p.y + P.H / 2)]; if (sc.gust && sc.wind) { sensitive = true; return; } }
   for (const b of moverBoxes) if (p.x < b.x1 && p.x + P.W > b.x0 && p.y < b.y1 && p.y + P.H > b.y0) { sensitive = true; return; }
 }
-// 불티: 게임과 같은 판정(타일 둘레 3px)으로 시뮬레이션 중 닿은 적이 있는지 기록
-const sparks = world.objects.filter((o) => o.ch === '*');
+// 불티(*)·랜턴 실(t): 게임과 같은 판정(타일 둘레 3px)으로 시뮬레이션 중 닿은 적이 있는지 기록
+const sparks = world.objects.filter((o) => o.ch === '*' || o.ch === 't');
+const pickName = (o) => (o.ch === '*' ? '불티' : '랜턴 실');
 const sparkHit = new Set();
 function touchSparks(p) {
   for (let i = 0; i < sparks.length; i++) {
@@ -211,7 +241,7 @@ while (queue.length) {
     edgeW.set(key, (edgeW.get(key) || 0) + w);
     if (dist[v] === undefined) { dist[v] = dist[u] + 1; queue.push(v); }
   };
-  for (const x of xs) for (const dir of [-1, 0, 1]) for (const k of ks) for (const air of [-1, 0, 1]) {
+  for (const x of xs) for (const dir of [-1, 0, 1]) for (const k of ks) for (const air of AIRS) {
     const first = simJump(node, phases[0], x, dir, k, air);
     if (!sensitive) { take(first, weight * phases.length); continue; }
     take(first, weight);
@@ -243,7 +273,7 @@ function describe(i) {
 // ── 5. 출력 ──
 if (!quiet) {
   for (let sc = world.n - 1; sc >= 0; sc--) {
-    const S = L.SCREENS[sc];
+    const S = SCREENS[sc];
     const tags = [L.ZONES[S.zone].name];
     if (S.wind) tags.push(`바람 ${S.wind > 0 ? '→' : '←'} ${Math.abs(S.wind)}${S.gust ? ' (돌풍)' : ''}`);
     console.log(`\n── 화면 ${sc} (${tags.join(', ')}) ──`);
@@ -276,8 +306,9 @@ for (const o of world.objects.filter((o) => o.ch === 'S' || o.ch === 'N')) {
   if (!hit) { ok = false; console.log(`✗ ${o.ch === 'S' ? '기억의 돌' : '까마귀'} (화면${o.screen}, c${o.col})에 닿을 수 없음`); }
 }
 
-console.log(`불티 ${sparkHit.size} / ${sparks.length}개 모을 수 있음`);
-sparks.forEach((o, i) => { if (!sparkHit.has(i)) { ok = false; console.log(`✗ 불티 (화면${o.screen}, c${o.col})에 닿을 수 없음`); } });
+const hitOf = (ch) => sparks.filter((o, i) => o.ch === ch && sparkHit.has(i)).length;
+console.log(`불티 ${hitOf('*')} / ${sparks.filter((o) => o.ch === '*').length}개, 랜턴 실 ${hitOf('t')} / ${sparks.filter((o) => o.ch === 't').length}개 모을 수 있음`);
+sparks.forEach((o, i) => { if (!sparkHit.has(i)) { ok = false; console.log(`✗ ${pickName(o)} (화면${o.screen}, r${o.row - (world.n - 1 - o.screen) * ROWS} c${o.col})에 닿을 수 없음`); } });
 
 const ei = process.argv.indexOf('--edges');
 if (ei > 0) {
@@ -289,6 +320,7 @@ if (ei > 0) {
 }
 
 const endNode = goalNode >= 0 ? goalNode : goalVia;
+let path = null, hardest = 0;
 if (endNode < 0) {
   ok = false;
   let best = startNode, bestR = Infinity;
@@ -318,13 +350,78 @@ if (endNode < 0) {
       if (!done[b] && (nw > width[b] || (nw === width[b] && hops[u] + 1 < hops[b]))) { width[b] = nw; hops[b] = hops[u] + 1; prev[b] = u; }
     }
   }
-  const path = [];
+  path = [];
   for (let s = endNode; prev[s] >= 0; s = prev[s]) path.unshift({ a: prev[s], b: s });
   console.log(`✓ 별등대 도달 가능 (최소 ${dist[endNode] + (goalNode >= 0 ? 0 : 1)}번 이동)\n\n가장 쉬운 경로 — 괄호 = 성공하는 조합 수(출발 시각 하나당), 적을수록 어려움`);
   for (const e of path) {
     const w = edgeW.get(e.a + '>' + e.b) || 0;
     console.log(`  ${describe(e.a).padEnd(26)} → ${describe(e.b).padEnd(26)} (${w.toFixed(1)})${w < 15 ? '  ← 어려움' : ''}`);
   }
-  console.log(`가장 어려운 이동의 조합 수: ${width[endNode].toFixed(1)}`);
+  hardest = width[endNode];
+  console.log(`가장 어려운 이동의 조합 수: ${hardest.toFixed(1)}`);
+}
+
+// ── 6. 추락 지도: 가장 쉬운 경로의 각 점프를 차지 ±3프레임(약 0.05초) 빗나가게 뛰면 어디에 떨어지나 ──
+function nodeFeetY(i) {
+  const n = nodes[i];
+  return n.type === 'm' ? world.movers[n.m].y0 : segs[n.seg].row * TILE;
+}
+if (FALLS && path) {
+  const MISS = [-3, 3];
+  const SCREEN_M = (ROWS * TILE) / 32;
+  const rows = [];
+  for (const e of path) {
+    const node = nodes[e.a], { phases, xs, ks } = samples(node), y0 = nodeFeetY(e.a);
+    let tries = 0, lost = 0, sum = 0, worst = 0, worstTo = -1;
+    for (const x of xs) for (const dir of [-1, 0, 1]) for (const k of ks) for (const air of AIRS) {
+      for (const t of phases) {
+        const ok1 = simJump(node, t, x, dir, k, air);
+        const sens = sensitive;
+        if (!ok1 || nodeOf(ok1.p) !== e.b) { if (!sens) break; continue; }
+        for (const dk of MISS) {
+          const kk = k + dk;
+          if (kk < 1 || kk > P.CHARGE_FRAMES) continue;
+          const r = simJump(node, t, x, dir, kk, air);
+          if (!r) continue;
+          tries++;
+          const v = nodeOf(r.p);
+          if (v === e.b || r.goal) continue;
+          const drop = Math.max(0, (r.p.y + P.H - y0) / 32);
+          sum += drop;
+          if (drop > 0.01) lost++;
+          if (drop > worst) { worst = drop; worstTo = v; }
+        }
+        if (!sens) break;
+      }
+    }
+    rows.push({ e, tries, lost, avg: tries ? sum / tries : 0, worst, worstTo, screen: node.screen });
+  }
+  console.log(`\n추락 지도 — 가장 쉬운 경로의 점프를 차지 ±3프레임 빗나가게 뛰었을 때 (높이 1화면 = ${SCREEN_M}m)`);
+  console.log('  출발                          빗나감 중 떨어짐   평균 손실   최악 손실 → 착지');
+  for (const r of rows) {
+    const pct = r.tries ? Math.round((100 * r.lost) / r.tries) : 0;
+    const scr = r.worst / SCREEN_M;
+    const flag = scr >= 3 ? '  ◀◀ 큰 추락' : scr >= 1 ? '  ◀ 화면 넘김' : '';
+    console.log(`  ${describe(r.e.a).padEnd(28)} ${String(pct).padStart(4)}%        ${r.avg.toFixed(1).padStart(5)}m    ${r.worst.toFixed(1).padStart(5)}m → ${r.worstTo >= 0 ? describe(r.worstTo) : '-'}${flag}`);
+  }
+  const byScreen = {};
+  for (const r of rows) { const b = byScreen[r.screen] || (byScreen[r.screen] = { n: 0, avg: 0, worst: 0 }); b.n++; b.avg += r.avg; b.worst = Math.max(b.worst, r.worst); }
+  console.log('\n  화면별 요약 (구역)            평균 손실   최악 손실');
+  for (const [sc, b] of Object.entries(byScreen)) console.log(`  화면${String(sc).padEnd(3)} ${L.ZONES[SCREENS[sc].zone].name.padEnd(8)}            ${(b.avg / b.n).toFixed(1).padStart(5)}m   ${b.worst.toFixed(1).padStart(5)}m (${(b.worst / SCREEN_M).toFixed(1)}화면)`);
+}
+
+// ── 7. 커스텀 맵 검증 표시 ──
+if (MAP_FILE && argv.includes('--stamp')) {
+  if (!ok) console.log('\n✗ 검증을 통과하지 못해 검증 표시를 쓰지 않았습니다.');
+  else {
+    const hash = Ph.mapHash(SCREENS), mode = KEEPER ? 'keeper' : 'story';
+    const prev = customMap.verified && customMap.verified.hash === hash ? customMap.verified : { hash, modes: [] };
+    if (!prev.modes.includes(mode)) prev.modes.push(mode);
+    prev.moves = dist[endNode] + (goalNode >= 0 ? 0 : 1);
+    prev.hardest = Math.round(hardest * 10) / 10;
+    customMap.verified = prev;
+    fs.writeFileSync(MAP_FILE, JSON.stringify(customMap, null, 1));
+    console.log(`\n✓ ${MAP_FILE}에 검증 표시를 썼습니다 (${prev.modes.join(', ')}).`);
+  }
 }
 process.exit(ok ? 0 : 1);

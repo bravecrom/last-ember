@@ -523,6 +523,21 @@
   }
 
   // 불티: 위아래로 떠다니며 반짝이는 작은 별
+  // 랜턴 실: 공중에 떠서 천천히 오르내리는 실 타래
+  function drawThread(c, x, y, t, color) {
+    const bob = Math.round(Math.sin(t * 0.05) * 1.5), cx = x + 8, cy = y + 8 + bob;
+    c.fillStyle = OUTLINE;
+    c.fillRect(cx - 4, cy - 3, 8, 7);
+    c.fillStyle = color;
+    c.fillRect(cx - 3, cy - 2, 6, 5);
+    c.fillStyle = 'rgba(0,0,0,.35)';
+    c.fillRect(cx - 3, cy, 6, 1); c.fillRect(cx - 3, cy + 2, 6, 1);
+    c.fillStyle = 'rgba(255,255,255,.55)';
+    c.fillRect(cx - 2, cy - 2, 2, 1);
+    // 풀려 나온 실 한 가닥
+    c.fillStyle = color;
+    for (let i = 0; i < 6; i++) c.fillRect(cx + 3 + i, cy + 3 + Math.round(Math.sin(t * 0.08 + i * 0.9)), 1, 1);
+  }
   function drawSpark(c, x, y, t) {
     const cx = x + 8, cy = Math.round(y + 8 + Math.sin(t * 0.08 + x) * 1.5);
     const tw = 0.6 + 0.4 * Math.abs(Math.sin(t * 0.1 + x * 0.3));
@@ -672,5 +687,5 @@
     }
   }
 
-  window.Art = { makeCanvas, glow, seeded, prerender, screens, lumi, crow, ZS, drawLamp, drawStone, drawCrow, drawFlag, drawBeacon, drawMover, drawTrack, drawCrumble, drawSpark, drawTitleScene };
+  window.Art = { makeCanvas, glow, seeded, prerender, screens, lumi, crow, ZS, drawLamp, drawStone, drawCrow, drawFlag, drawBeacon, drawMover, drawTrack, drawCrumble, drawSpark, drawThread, drawTitleScene };
 })();

@@ -24,7 +24,7 @@
     JUMP_VX: 2.6,               // 점프 수평 속도
     MIN_VY: 2.2, MAX_VY: 8.4,   // 차지량에 따라 수직 속도가 정해진다
     CHARGE_FRAMES: 35,          // 최대 차지까지 걸리는 프레임 (최대에 닿으면 자동 점프)
-    AIR_ACCEL: 0.15,            // 공중에서 방향키를 누르면 이만큼씩 가속
+    AIR_ACCEL: 0.15,            // 공중에서 방향키를 누르면 이만큼씩 가속 (등불지기 모드에서는 0 — setRules)
     AIR_MAX: 2.6,               // 공중 이동 최고 속도 (점프 수평 속도와 같음)
     BOUNCE: 0.5,                // 공중에서 벽에 부딪히면 반대로 튕김
     ICE_ACCEL: 0.05, ICE_FRICTION: 0.975, ICE_LAND_KEEP: 0.85,
@@ -36,6 +36,13 @@
 
   const T_AIR = 0, T_SOLID = 1, T_ICE = 2, T_CRUMBLE = 3;
 
+  // 조작 규칙: air=false 이면 등불지기 모드 — 뛰는 순간 궤적이 정해지고 공중에서 몸을 틀 수 없다.
+  const AIR_ACCEL_DEFAULT = P.AIR_ACCEL;
+  function setRules({ air = true } = {}) { P.AIR_ACCEL = air ? AIR_ACCEL_DEFAULT : 0; }
+
+  // 꺼진 탑(2회차): 바람이 세지고, 'K' 돌이 무너지는 돌이 된다 (보통 탑에서는 단단한 돌)
+  const DARK_WIND = 1.3;
+
   // 돌풍 세기 0~1: 한 주기(240프레임) 중 130프레임 불고 90프레임 쉰다.
   function gustFactor(t) {
     const ph = ((t % CYCLE) + CYCLE) % CYCLE;
@@ -46,8 +53,10 @@
   }
 
   // screens: 아래(0)부터 위로. 각 screen.map은 위→아래 18줄, 줄마다 32글자.
-  function World(screens) {
+  // opts.dark: 꺼진 탑 규칙
+  function World(screens, opts = {}) {
     this.screens = screens;
+    this.dark = !!opts.dark;
     this.n = screens.length;
     this.rows = this.n * ROWS;
     this.width = SCREEN_W;
@@ -67,7 +76,7 @@
         if (line.length !== COLS) throw new Error(`screen ${s} row ${r}: ${line.length}칸 (필요: ${COLS})`);
         const wr = top + r;
         for (let c = 0; c < COLS; c++) {
-          const ch = line[c], i = wr * COLS + c;
+          const ch = line[c] === 'K' ? (this.dark ? 'C' : '#') : line[c], i = wr * COLS + c;
           if (ch === '#') this.grid[i] = T_SOLID;
           else if (ch === 'I') this.grid[i] = T_ICE;
           else if (ch === 'C') {
@@ -102,7 +111,7 @@
   };
   World.prototype.screenTop = function (s) { return (this.n - 1 - s) * SCREEN_H; };
   World.prototype.windAt = function (y) {
-    const sc = this.screens[this.screenAt(y)], w = sc.wind || 0;
+    const sc = this.screens[this.screenAt(y)], w = (sc.wind || 0) * (this.dark ? DARK_WIND : 1);
     return w && sc.gust ? w * gustFactor(this.t) : w;
   };
   World.prototype.moverAt = function (m, t) {
@@ -306,5 +315,13 @@
     if (!p.onGround && p.vy <= 0) p.apexY = p.y;
   }
 
-  return { TILE, COLS, ROWS, SCREEN_W, SCREEN_H, CYCLE, P, T_AIR, T_SOLID, T_ICE, T_CRUMBLE, gustFactor, World, createPlayer, step, overlaps, groundUnder };
+  // 커스텀 맵 검증 표시용 지문 (검증기와 게임이 같은 함수를 쓴다)
+  function mapHash(screens) {
+    const str = JSON.stringify(screens);
+    let h = 0x811c9dc5;
+    for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+    return h.toString(16).padStart(8, '0');
+  }
+
+  return { TILE, COLS, ROWS, SCREEN_W, SCREEN_H, CYCLE, P, DARK_WIND, setRules, mapHash, T_AIR, T_SOLID, T_ICE, T_CRUMBLE, gustFactor, World, createPlayer, step, overlaps, groundUnder };
 });
