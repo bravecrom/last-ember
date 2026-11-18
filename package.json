@@ -1,0 +1,19 @@
+{
+  "name": "last-ember",
+  "productName": "LastEmber",
+  "version": "1.0.0",
+  "description": "마지막 불씨 — 랜턴을 든 루미가 꺼진 별등대를 향해 탑을 오르는 2D 차지 점프 플랫포머",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "validate": "node tools/validate-levels.js",
+    "dist:web": "node tools/dist.js web",
+    "dist:mac": "electron-packager . LastEmber --platform=darwin --arch=arm64,x64 --out=dist --overwrite --ignore=^/dist --ignore=^/tools --ignore=^/\\.claude && node tools/dist.js mac",
+    "dist:win": "electron-packager . LastEmber --platform=win32 --arch=x64 --out=dist --overwrite --ignore=^/dist --ignore=^/tools --ignore=^/\\.claude && node tools/dist.js win"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "electron": "^45.3.4"
+  }
+}
