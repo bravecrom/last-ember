@@ -30,7 +30,7 @@
     ICE_ACCEL: 0.05, ICE_FRICTION: 0.975, ICE_LAND_KEEP: 0.85,
     SPLAT_FALL: 170,            // 이 거리(px) 이상 떨어지면 엎어진다
     SPLAT_FRAMES: 45,
-    CRUMBLE_DELAY: 42,          // 무너지는 돌: 밟은 뒤 무너질 때까지
+    CRUMBLE_DELAY: 70,          // 무너지는 돌: 밟은 뒤 무너질 때까지
     CRUMBLE_RESPAWN: 180,       // 무너진 뒤 다시 생길 때까지
   };
 
