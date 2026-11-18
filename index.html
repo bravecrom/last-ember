@@ -2,12 +2,18 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="theme-color" content="#000000">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'">
 <title>마지막 불씨</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
-  canvas { display: block; width: 100vw; height: 100vh; outline: none; }
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; overscroll-behavior: none; }
+  /* 크기는 game.js가 창 크기(innerWidth/innerHeight)에 맞춘다. 터치로 스크롤·확대·길게 누르기 메뉴가 뜨지 않게 막는다. */
+  canvas { display: block; position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; outline: none;
+    touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
 </style>
 </head>
 <body>

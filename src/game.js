@@ -53,6 +53,7 @@
   addEventListener('keydown', (e) => {
     if (GAME_KEYS.has(e.code)) e.preventDefault();
     Sound.unlock();
+    touchMode = false; // 키보드를 쓰면 화면 버튼을 숨긴다
     if (!e.repeat) {
       pressed[e.code] = true;
       if (e.code === 'KeyM') toggleMute();
@@ -61,15 +62,95 @@
     keys[e.code] = true;
   });
   addEventListener('keyup', (e) => { keys[e.code] = false; });
-  addEventListener('blur', () => { for (const k in keys) keys[k] = false; if (G.state === 'play') openPause(); });
+  addEventListener('blur', () => { for (const k in keys) keys[k] = false; fingers.clear(); syncTouch(); if (G.state === 'play') openPause(); });
   addEventListener('beforeunload', () => save());
   canvas.addEventListener('pointerdown', () => { Sound.unlock(); canvas.focus(); });
   const hit = (...codes) => codes.some((c) => pressed[c]);
 
+  // ── 터치 (휴대폰·태블릿) ──
+  // 처음에 손가락이 주 입력인 기기면 화면 버튼을 띄우고, 이후 화면을 만지면 띄우고 키보드를 누르면 숨긴다.
+  // 플레이 중에는 ◀ ▶ 이동, 점프(누르고 있다가 떼기), ❚❚ 일시정지. 돌·까마귀 곁에서는 그 위의 '다시 읽기' 글자를 누른다.
+  // 그 밖의 화면(메뉴·대화·인트로·엔딩)에서는 누른 곳이 곧 선택이다.
+  let touchMode = matchMedia('(pointer: coarse)').matches;
+  const touch = Object.create(null); // 화면 버튼이 누르고 있는 가상 키
+  const fingers = new Map();         // pointerId → 맡은 가상 키
+  let tap = null;                    // 버튼 밖을 누른 위치 (게임 좌표), update가 한 번 쓰고 지운다
+  let DPR = 1, OX = 0, OY = 0;       // render가 정하는 화면 배치 (S와 함께 터치 좌표 변환에 쓴다)
+  function touchButtons() {
+    const W = innerWidth, H = innerHeight, m = 16, r = Math.max(26, Math.min(44, Math.min(W, H) * 0.1));
+    const y = H - m - r * 1.25, jx = W - m - r * 1.25;
+    return {
+      left: { x: m + r, y, r }, right: { x: m + r * 3.4, y, r },
+      jump: { x: jx, y, r: r * 1.25 },
+      pause: { x: W / 2, y: m + r * 0.55, r: r * 0.55 },
+      height: m * 2 + r * 2.5, // 버튼이 차지하는 아래쪽 높이 (세로 화면 배치용)
+    };
+  }
+  function fingerKey(x, y) {
+    const b = touchButtons(), near = (k, f) => Math.hypot(x - b[k].x, y - b[k].y) < b[k].r * f;
+    if (near('pause', 1.6)) return 'Escape';
+    if (near('jump', 1.5)) return 'Space';
+    if (near('left', 1.5) || near('right', 1.5)) return 'move';
+    return null;
+  }
+  const moveKey = (x) => { const b = touchButtons(); return x < (b.left.x + b.right.x) / 2 ? 'ArrowLeft' : 'ArrowRight'; };
+  function syncTouch() {
+    for (const c of ['ArrowLeft', 'ArrowRight', 'Space', 'Escape']) touch[c] = false;
+    for (const f of fingers.values()) if (f) touch[f] = true;
+  }
+  canvas.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse') return;
+    touchMode = true;
+    const gx = (e.clientX * DPR - OX) / S, gy = (e.clientY * DPR - OY) / S;
+    if (G.state !== 'play') { tap = { x: gx, y: gy }; return; }
+    // 돌·까마귀 위의 '다시 읽기' 글자를 누르면 다시 읽는다. 글자 바로 위를 누르면 이동·점프 버튼보다 앞선다
+    // (작은 폰에서는 첫 기억의 돌 글자가 ▶ 버튼의 누르는 범위 안에 들어온다). 돌·까마귀 자체를 눌러도 된다.
+    const b = G.prompt && promptBox(), o = G.prompt;
+    const onLabel = (pad) => b && gx > b.x - pad && gx < b.x + b.w + pad && gy > b.y - pad && gy < b.y + b.h + pad;
+    let k = fingerKey(e.clientX, e.clientY);
+    if (k !== 'Escape' && onLabel(3)) k = null;
+    if (k === 'move') k = moveKey(e.clientX);
+    if (k) { fingers.set(e.pointerId, k); pressed[k] = true; syncTouch(); }
+    else if (onLabel(10) || (o && gx > o.x - 4 && gx < o.x + TILE + 4 && gy > b.y + b.h && gy < b.y + 18 + TILE)) pressed.ArrowUp = true;
+  });
+  canvas.addEventListener('pointermove', (e) => {
+    const k = fingers.get(e.pointerId);
+    if (k === 'ArrowLeft' || k === 'ArrowRight') { fingers.set(e.pointerId, moveKey(e.clientX)); syncTouch(); }
+  });
+  const fingerUp = (e) => { Sound.unlock(); if (fingers.delete(e.pointerId)) syncTouch(); };
+  canvas.addEventListener('pointerup', fingerUp);
+  canvas.addEventListener('pointercancel', fingerUp);
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+  // 누른 곳을 그 화면의 키 입력으로 바꾼다 (메뉴 항목·설정 줄·대화 넘기기)
+  const TITLE_MENU = [166, 16], PAUSE_MENU = [112, 18];
+  function menuTap(t, [y0, gap], n, setI) {
+    const i = Math.round((t.y - (y0 - 3)) / gap);
+    if (i >= 0 && i < n && Math.abs(t.x - VW / 2) < 70) { setI(i); pressed.Enter = true; }
+  }
+  function applyTap() {
+    const t = tap;
+    tap = null;
+    if (!t) return;
+    const inMenu = G.state === 'title' || G.state === 'pause';
+    if (inMenu && G.opt) {
+      if (t.x < 96 || t.x > 416 || t.y < 52 || t.y > 236) { pressed.Escape = true; return; }
+      const items = settingsItems(), i = Math.round((t.y - 103) / 22);
+      if (i < 0 || i >= items.length || t.x < 100 || t.x > 412) return;
+      G.opt.i = i;
+      if (items[i].kind !== 'vol') pressed.Enter = true;
+      else if (t.x >= 258) pressed[t.x < 311 ? 'ArrowLeft' : 'ArrowRight'] = true;
+    } else if (inMenu && G.help) pressed.Enter = true;
+    else if (G.state === 'title') menuTap(t, TITLE_MENU, titleItems().length, (i) => { G.menu = i; });
+    else if (G.state === 'pause') menuTap(t, PAUSE_MENU, pauseItems().length, (i) => { G.menu = i; });
+    else if (G.state === 'intro' && t.x > VW - 90 && t.y > 262) pressed.Escape = true; // '건너뛰기'
+    else pressed.Enter = true;
+  }
+
   // 게임패드 (표준 배치): 스틱·십자키 이동, A 점프·선택, Y 또는 ↑ 다시 읽기, Start 일시정지, B 뒤로(메뉴·대화)
   const pad = Object.create(null);
   const PAD_CODES = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space', 'Escape'];
-  const held = (c) => !!(keys[c] || pad[c]);
+  const held = (c) => !!(keys[c] || pad[c] || touch[c]);
   function pollPad() {
     const gp = navigator.getGamepads ? Array.from(navigator.getGamepads()).find((g) => g && g.connected) : null;
     const now = Object.create(null);
@@ -123,7 +204,8 @@
       { label: '배경음악', kind: 'vol', key: 'bgm' },
       { label: '효과음', kind: 'vol', key: 'sfx' },
       { label: '화면 정보 (높이·점프 수)', kind: 'toggle', key: 'hud' },
-      { label: '전체 화면', kind: 'act', act: toggleFullscreen },
+      // 아이폰 사파리처럼 전체 화면을 지원하지 않는 곳에서는 숨긴다
+      ...(document.fullscreenEnabled ? [{ label: '전체 화면', kind: 'act', act: toggleFullscreen }] : []),
       { label: '돌아가기', kind: 'act', act: () => { G.opt = null; } },
     ];
   }
@@ -198,6 +280,7 @@
   function update() {
     G.t++;
     pollPad();
+    applyTap();
     switch (G.state) {
       case 'title':
         if (G.opt) updateSettings();
@@ -677,7 +760,14 @@
     ctx.fillStyle = 'rgba(4,3,12,.7)'; ctx.fillRect(0, 0, VW, VH);
     panel(86, 36, 340, 222, 0.95);
     txt('조작법', VW / 2, 60, 12, '#ffe7b5', { align: 'center', weight: 800 });
-    const rows = [
+    const rows = touchMode ? [
+      ['◀  ▶', '걷기 · 뛸 방향 고르기 · 공중에서 움직이기'],
+      ['점프', '누르고 있다가 떼면 점프 (오래 누를수록 높이)'],
+      ['다시 읽기', '돌·까마귀 곁에서 머리 위 글자를 누르기'],
+      ['❚❚', '일시정지 · 설정'],
+      ['화면 누르기', '대화 넘기기 · 메뉴 고르기'],
+      ['✦', `불티 — 닿으면 모인다 (모두 ${TOTAL_SPARKS}개)`],
+    ] : [
       ['← →  /  A D', '걷기 · 뛸 방향 고르기 · 공중에서 움직이기'],
       ['스페이스', '누르고 있다가 떼면 점프 (오래 누를수록 높이)'],
       ['↑  /  W', '기억의 돌 다시 읽기 · 까마귀와 대화'],
@@ -691,7 +781,7 @@
       txt(d, 192, 84 + i * 18, 8.5, '#e8e2f4');
     });
     txt('뛰어오른 뒤에도 ← →로 몸을 틀 수 있다. 벽에 부딪히면 튕겨 나온다.', VW / 2, 222, 8, '#b9b2d6', { align: 'center' });
-    txt('Enter / Esc 닫기', VW / 2, 242, 7, '#7d7698', { align: 'center' });
+    txt(touchMode ? '눌러서 닫기' : 'Enter / Esc 닫기', VW / 2, 242, 7, '#7d7698', { align: 'center' });
   }
 
   function drawSettings() {
@@ -711,7 +801,7 @@
         txt(settings[it.key] ? '켜짐' : '꺼짐', 398, y, 7.5, settings[it.key] ? '#ffe7b5' : '#8f88ad', { align: 'right', weight: 700 });
       }
     });
-    txt('↑ ↓ 고르기   ·   ← → 조절   ·   Esc 닫기', VW / 2, 224, 7, '#7d7698', { align: 'center' });
+    txt(touchMode ? '항목을 눌러 고르기   ·   막대의 왼쪽·오른쪽을 눌러 조절   ·   바깥을 누르면 닫기' : '↑ ↓ 고르기   ·   ← → 조절   ·   Esc 닫기', VW / 2, 224, 7, '#7d7698', { align: 'center' });
   }
 
   const ZONE_RGB = { forest: '120,200,110', ramparts: '170,150,220', frost: '130,210,240', gale: '220,200,150', summit: '255,210,120' };
@@ -755,6 +845,14 @@
     if (d.n >= line.text.length && Math.floor(G.t / 20) % 2) txt('▼', bx + bw - 12, by + bh - 9, 7, '#e9c46a', { align: 'right' });
   }
 
+  // 돌·까마귀 머리 위 '다시 읽기' 글자의 자리 (게임 화면 좌표). 그리기와 터치 판정이 함께 쓴다.
+  function promptBox() {
+    const o = G.prompt, label = (touchMode ? '눌러서 ' : '↑ ') + (o.ch === 'S' ? '다시 읽기' : '대화');
+    ctx.font = `600 7px ${FONT}`;
+    const w = ctx.measureText(label).width + 10;
+    return { label, x: o.x + 8 - w / 2, y: o.y - world.screenTop(G.screen) - 18, w, h: 11 };
+  }
+
   function drawPlayUI(camY) {
     if (settings.hud) drawHUD();
     for (const pp of G.popups) {
@@ -783,10 +881,9 @@
       txt(q.line.text, x0 + ww, y, 8.5, '#f3ead8', { alpha: a });
     }
     if (G.prompt && G.state === 'play') {
-      const o = G.prompt, label = o.ch === 'S' ? '↑ 다시 읽기' : '↑ 대화';
-      ctx.font = `600 7px ${FONT}`;
-      const w = ctx.measureText(label).width + 10, x = o.x + 8 - w / 2, y = o.y - camY - 18;
+      const o = G.prompt, { label, x, y, w } = promptBox();
       rrect(x, y, w, 11, 3); ctx.fillStyle = 'rgba(12,9,26,.85)'; ctx.fill();
+      if (touchMode) { ctx.lineWidth = 0.6; ctx.strokeStyle = 'rgba(233,196,106,.8)'; ctx.stroke(); } // 누를 수 있다는 표시
       txt(label, o.x + 8, y + 8, 7, '#ffe7b5', { align: 'center', weight: 600, shadow: false });
     }
     if (G.state === 'dialog') drawDialogBox();
@@ -794,7 +891,7 @@
       ctx.fillStyle = 'rgba(4,3,12,.6)'; ctx.fillRect(0, 0, VW, VH);
       panel(156, 58, 200, 170, 0.94);
       txt('일시정지', VW / 2, 84, 13, '#ffe7b5', { align: 'center', weight: 800 });
-      drawMenu(pauseItems(), 112, 18);
+      drawMenu(pauseItems(), ...PAUSE_MENU);
       const st = G.stats;
       txt(`${fmtTime(st.time)}   ·   점프 ${st.jumps}   ·   추락 ${st.falls}`, VW / 2, 200, 7, '#8f88ad', { align: 'center' });
       txt(`최고 높이 ${Math.floor(st.maxH)}m / ${Math.floor(SUMMIT_M)}m   ·   불티 ${Object.keys(G.collected).length} / ${TOTAL_SPARKS}`, VW / 2, 213, 7, '#8f88ad', { align: 'center' });
@@ -807,14 +904,14 @@
     const a = Math.min(1, G.t / 60);
     txt('마지막 불씨', VW / 2, 116, 32, '#ffe7b5', { align: 'center', weight: 800, glow: 'rgba(255,160,70,.85)', blur: 14, alpha: a });
     txt('T H E    L A S T    E M B E R', VW / 2, 132, 7, '#c9a76a', { align: 'center', weight: 600, alpha: a });
-    drawMenu(titleItems(), 166, 16);
+    drawMenu(titleItems(), ...TITLE_MENU);
     if (best.time) {
       const parts = [`최고 기록 ${fmtTime(best.time)}`];
       if (best.jumps) parts.push(`최소 점프 ${best.jumps}번`);
       if (best.sparks) parts.push(`불티 ${best.sparks} / ${TOTAL_SPARKS}`);
       txt(parts.join('   ·   '), VW - 12, 16, 7, '#c9a76a', { align: 'right' });
     }
-    txt('← → 이동   ·   스페이스(패드 A) 길게 눌렀다 떼기: 점프   ·   M 소리   ·   F 전체 화면', VW / 2, 278, 6.5, '#8f88ad', { align: 'center' });
+    txt(touchMode ? '◀ ▶ 이동   ·   점프 버튼을 길게 눌렀다 떼기: 점프   ·   메뉴는 눌러서 고르기' : '← → 이동   ·   스페이스(패드 A) 길게 눌렀다 떼기: 점프   ·   M 소리   ·   F 전체 화면', VW / 2, 278, 6.5, '#8f88ad', { align: 'center' });
     if (G.help) drawHelp();
     if (G.opt) drawSettings();
   }
@@ -826,7 +923,7 @@
     ctx.fillStyle = g; ctx.fillRect(0, 180, VW, VH - 180);
     typed(wrap(slide.text, 400, 11), it.n, VW / 2, 228, 17, 11, '#f3ead8', true);
     txt(`${it.i + 1} / ${INTRO.length}`, 14, 278, 6.5, '#7d7698');
-    txt('스페이스 ▶     Esc 건너뛰기', VW - 14, 278, 6.5, '#7d7698', { align: 'right' });
+    txt(touchMode ? '눌러서 넘기기     건너뛰기 ▶▶' : '스페이스 ▶     Esc 건너뛰기', VW - 14, 278, 6.5, '#7d7698', { align: 'right' });
   }
 
   function drawEndingUI() {
@@ -865,16 +962,23 @@
       if (rec) { ctx.font = `700 9px ${FONT}`; txt('신기록!', VW / 2 + 18 + ctx.measureText(val).width, y, 8, '#ffcf70', { weight: 800, glow: 'rgba(255,170,80,.7)', blur: 6 }); }
     });
     if (sparks === TOTAL_SPARKS) txt('✦ 흩어진 불티를 모두 모았다 ✦', VW / 2, 222, 8.5, '#ffd98a', { align: 'center', weight: 700, glow: 'rgba(255,170,80,.6)', blur: 6 });
-    if (G.t - G.creditsAt > 60 && Math.floor(G.t / 30) % 2) txt('Enter — 타이틀로', VW / 2, 244, 8, '#e9c46a', { align: 'center' });
+    if (G.t - G.creditsAt > 60 && Math.floor(G.t / 30) % 2) txt(touchMode ? '눌러서 타이틀로' : 'Enter — 타이틀로', VW / 2, 244, 8, '#e9c46a', { align: 'center' });
   }
 
   // ───────────────────────── 렌더 ─────────────────────────
   function render() {
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = DPR = window.devicePixelRatio || 1;
     const W = Math.round(innerWidth * dpr), H = Math.round(innerHeight * dpr);
-    if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+    if (canvas.width !== W || canvas.height !== H) {
+      canvas.width = W; canvas.height = H;
+      canvas.style.width = innerWidth + 'px'; canvas.style.height = innerHeight + 'px'; // 모바일 주소창 높이 변화에 맞춘다
+    }
     S = Math.min(W / VW, H / VH);
-    const ox = Math.round((W - VW * S) / 2), oy = Math.round((H - VH * S) / 2);
+    const ox = Math.round((W - VW * S) / 2);
+    let oy = Math.round((H - VH * S) / 2);
+    // 세로로 든 터치 기기: 게임 화면을 위로 올리고 아래 빈 곳에 버튼을 둔다
+    if (touchMode && H > W) oy = Math.round(Math.max(0, Math.min(oy, (H - touchButtons().height * dpr - VH * S) / 2)));
+    OX = ox; OY = oy;
 
     switch (G.state) {
       case 'title': Art.drawTitleScene(v, G.t, { beacon: false, lumi: true, lantern: true }); break;
@@ -909,6 +1013,47 @@
     }
     if (G.fade > 0) { ctx.fillStyle = `rgba(0,0,0,${G.fade})`; ctx.fillRect(0, 0, VW, VH); }
     ctx.restore();
+    if (touchMode && G.state === 'play') drawTouch();
+  }
+
+  // 화면 버튼 (CSS 픽셀 좌표로 그린다)
+  // 가로 화면에서는 버튼이 게임 위에 겹치므로, 루미가 버튼 밑에 오면 그 버튼을 흐리게 해 캐릭터가 보이게 한다.
+  function drawTouch() {
+    const b = touchButtons(), p = G.p, k = S / DPR, pad = 8;
+    const rx = (OX + p.x * S) / DPR - pad, ry = (OY + (p.y - world.screenTop(G.screen)) * S) / DPR - pad;
+    const rw = P.W * k + pad * 2, rh = P.H * k + pad * 2;
+    const covers = (o) => Math.hypot(o.x - Math.max(rx, Math.min(o.x, rx + rw)), o.y - Math.max(ry, Math.min(o.y, ry + rh))) < o.r;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    const circle = (o, on) => {
+      ctx.globalAlpha = covers(o) ? 0.2 : 1;
+      ctx.beginPath(); ctx.arc(o.x, o.y, o.r, 0, Math.PI * 2);
+      ctx.fillStyle = on ? 'rgba(255,190,90,.32)' : 'rgba(12,9,26,.38)'; ctx.fill();
+      ctx.lineWidth = 1.5; ctx.strokeStyle = on ? 'rgba(255,207,112,.95)' : 'rgba(233,196,106,.5)'; ctx.stroke();
+    };
+    const arrow = (o, dx, dy) => { // dx·dy: 화살표가 가리키는 방향
+      const s = o.r * 0.36, px = -dy, py = dx;
+      ctx.beginPath();
+      ctx.moveTo(o.x + dx * s, o.y + dy * s);
+      ctx.lineTo(o.x - dx * s * 0.7 + px * s, o.y - dy * s * 0.7 + py * s);
+      ctx.lineTo(o.x - dx * s * 0.7 - px * s, o.y - dy * s * 0.7 - py * s);
+      ctx.closePath(); ctx.fillStyle = 'rgba(255,241,214,.9)'; ctx.fill();
+    };
+    circle(b.left, touch.ArrowLeft); arrow(b.left, -1, 0);
+    circle(b.right, touch.ArrowRight); arrow(b.right, 1, 0);
+    circle(b.jump, touch.Space);
+    if (p.charging) { // 모으는 힘을 테두리로 보여 준다
+      const ch = p.charge / P.CHARGE_FRAMES;
+      ctx.beginPath(); ctx.arc(b.jump.x, b.jump.y, b.jump.r - 3, -Math.PI / 2, -Math.PI / 2 + ch * Math.PI * 2);
+      ctx.lineWidth = 4; ctx.strokeStyle = ch > 0.7 ? '#ff9a4a' : '#ffd36b'; ctx.stroke();
+    }
+    ctx.font = `700 ${Math.round(b.jump.r * 0.42)}px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(255,241,214,.9)'; ctx.fillText('점프', b.jump.x, b.jump.y);
+    circle(b.pause, touch.Escape);
+    const u = b.pause.r * 0.32;
+    ctx.fillStyle = 'rgba(255,241,214,.9)';
+    ctx.fillRect(b.pause.x - u * 1.1, b.pause.y - u * 1.2, u * 0.7, u * 2.4);
+    ctx.fillRect(b.pause.x + u * 0.4, b.pause.y - u * 1.2, u * 0.7, u * 2.4);
+    ctx.textBaseline = 'alphabetic'; ctx.globalAlpha = 1;
   }
 
   // ───────────────────────── 루프 ─────────────────────────
