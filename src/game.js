@@ -356,16 +356,25 @@
 
   function handleEvents(p) {
     for (const e of p.events) {
-      if (e.type === 'jump') { G.stats.jumps++; Sound.jump(e.power); puff(p.x + 5, p.y + P.H, 3 + Math.round(e.power * 5)); }
+      if (e.type === 'jump') {
+        G.stats.jumps++; Sound.jump(e.power); puff(p.x + 5, p.y + P.H, 3 + Math.round(e.power * 5));
+        if (e.power >= 1) { G.shake = Math.max(G.shake, 4); flames(p.x + P.W / 2, p.y + P.H); }
+      }
       else if (e.type === 'land') { Sound.land(e.fall); if (e.fall > 24) puff(p.x + 5, p.y + P.H, 2 + Math.min(6, Math.round(e.fall / 24))); }
       else if (e.type === 'splat') { G.stats.falls++; Sound.splat(); G.shake = 12; puff(p.x + 5, p.y + P.H, 12); }
-      else if (e.type === 'bump') Sound.bump();
+      else if (e.type === 'bump') {
+        Sound.bump();
+        G.shake = Math.max(G.shake, 3);
+        // 부딪힌 자리: 천장이면 머리 위, 벽이면 튕긴 반대쪽 옆구리 (step이 이미 vx를 뒤집어 두었다)
+        if (e.ceiling) bumpSparks(p.x + P.W / 2, p.y, 0);
+        else bumpSparks(p.vx < 0 ? p.x + P.W : p.x, p.y + P.H / 2, p.vx < 0 ? -1 : 1);
+      }
       // 4.5m(9칸) 넘게 떨어지면 잃은 높이를 띄운다
       if ((e.type === 'land' || e.type === 'splat') && e.fall >= 144) {
         const m = e.fall / 32;
         G.popups.push({ text: `−${m.toFixed(1)}m`, x: p.x + P.W / 2, y: p.y - 4, t: 0, big: e.type === 'splat' });
         if (m > G.stats.maxFall) G.stats.maxFall = m;
-        if (e.fall >= VH && G.t - G.quipAt > QUIP_COOLDOWN) quip();
+        if (e.fall >= VH && G.t - G.quipAt > QUIP_COOLDOWN) quip(SCREENS[world.screenAt(p.y - e.fall + P.H / 2)].zone);
       }
     }
     p.events.length = 0;
@@ -373,9 +382,10 @@
 
   // 한 화면 넘게 떨어지면 루미나 코르가 한마디 한다 (너무 잦지 않게 30초에 한 번까지)
   const QUIP_T = 240, QUIP_COOLDOWN = 1800;
-  function quip() {
+  // zone: 떨어지기 시작한 곳의 구역. 그 구역 전용 줄이 섞인다.
+  function quip(zone) {
     const metKor = Object.keys(G.read).some((k) => k[0] === 'N');
-    const pool = FALL_LINES.filter((l) => metKor || l.who !== '코르');
+    const pool = FALL_LINES.filter((l) => (metKor || l.who !== '코르') && (!l.zone || l.zone === zone));
     const line = pool[G.quipN++ % pool.length];
     G.quip = { line, t: 0 };
     G.quipAt = G.t;
@@ -462,7 +472,9 @@
   const E_IGNITE = 150, E_LINE = 270;
   function startEnding(o) {
     G.state = 'ending';
-    G.ending = { t: 0, o, camY: world.screenTop(world.n - 1), lit: 0, idx: -1 };
+    // 불티를 모두 모았으면 엔딩 대사가 늘고 등대 빛이 더 화려해진다
+    const full = Object.keys(G.collected).length === TOTAL_SPARKS;
+    G.ending = { t: 0, o, camY: world.screenTop(world.n - 1), lit: 0, idx: -1, full, lines: ENDING.filter((l) => full || !l.sparks) };
     G.p.facing = o.x + 8 < G.p.x + P.W / 2 ? -1 : 1;
     G.prompt = null; G.card = null;
     Sound.ignite();
@@ -480,15 +492,17 @@
     best = loadBest();
   }
   function updateEnding() {
-    const e = G.ending, top = world.screenTop(world.n - 1);
+    const e = G.ending, top = world.screenTop(world.n - 1), last = e.lines.length - 1;
     e.t++;
     world.tick(null); world.events.length = 0;
     if (!G.p.onGround || G.p.vx) { step(G.p, {}, world); G.p.events.length = 0; }
     e.lit = Math.max(0, Math.min(1, (e.t - 20) / 90));
-    if (e.t === 40) {
-      for (let i = 0; i < 60; i++) {
-        const a = Math.random() * Math.PI * 2, sp = 0.5 + Math.random() * 2.5;
-        particle({ x: e.o.x + 8, y: e.o.y - 6, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 1, g: 0.02, life: 60 + Math.random() * 60, color: '#ffd98a', rgb: '255,200,110' });
+    // 불이 붙는 순간 터지는 불꽃 (불티를 다 모았으면 세 번에 걸쳐 더 크게)
+    if (e.t === 40 || (e.full && (e.t === 70 || e.t === 100))) {
+      const n = e.full ? 90 : 60, boost = e.full ? 1.4 : 1;
+      for (let i = 0; i < n; i++) {
+        const a = Math.random() * Math.PI * 2, sp = (0.5 + Math.random() * 2.5) * boost;
+        particle({ x: e.o.x + 8, y: e.o.y - 6, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 1, g: 0.02, life: 60 + Math.random() * 60, color: i % 4 ? '#ffd98a' : '#fff2c0', rgb: '255,200,110' });
       }
     }
     if (e.t < E_IGNITE) { if (e.t > 40 && hit(...CONFIRM)) e.t = E_IGNITE; }
@@ -496,9 +510,9 @@
       const idx = Math.floor((e.t - E_IGNITE) / E_LINE);
       if (hit(...CONFIRM)) e.t = E_IGNITE + (idx + 1) * E_LINE;
       const now = Math.floor((e.t - E_IGNITE) / E_LINE);
-      if (now === ENDING.length - 1 && e.idx !== now) G.fade = 1;
+      if (now === last && e.idx !== now) G.fade = 1;
       e.idx = now;
-      if (now >= ENDING.length) {
+      if (now > last) {
         G.state = 'credits'; G.creditsAt = G.t; G.fade = 1; G.particles.length = 0;
         if (e.newTime || e.newJumps) Sound.record();
         return;
@@ -507,7 +521,7 @@
     // 카메라: 불이 붙은 뒤 탑 아래로 내려가며 빛이 번지는 모습을 보여 주고, 마지막 줄에서 다시 꼭대기로
     const prog = Math.max(0, Math.min(1, (e.t - E_IGNITE - E_LINE * 1.3) / (E_LINE * 3)));
     const ease = prog < 0.5 ? 2 * prog * prog : 1 - Math.pow(-2 * prog + 2, 2) / 2;
-    e.camY = e.idx >= ENDING.length - 1 ? top : top + ease * (world.screenTop(0) - top);
+    e.camY = e.idx >= last ? top : top + ease * (world.screenTop(0) - top);
     if (G.t % 3 === 0) particle({ kind: 'mote', x: Math.random() * VW, y: e.camY + VH + 4, vy: -0.35 - Math.random() * 0.6, vx: (Math.random() - 0.5) * 0.3, life: 420, color: '#ffd98a', rgb: '255,210,120' });
   }
 
@@ -521,6 +535,21 @@
     const cols = Art.ZS[SCREENS[G.screen] ? SCREENS[G.screen].zone : 'forest'].dust;
     for (let i = 0; i < n; i++) {
       particle({ x: x + (Math.random() - 0.5) * 8, y: y - 1 - Math.random() * 2, vx: (Math.random() - 0.5) * 1.4, vy: -Math.random() * 0.8, g: 0.03, life: 16 + Math.random() * 14, color: cols[i % 2], size: Math.random() < 0.3 ? 2 : 1 });
+    }
+  }
+  // 최대 차지로 뛸 때 발밑으로 뿜어지는 불꽃
+  function flames(x, y) {
+    const cols = ['#ffd36b', '#ff9a4a', '#ff6a3a'];
+    for (let i = 0; i < 14; i++) {
+      particle({ x: x + (Math.random() - 0.5) * 6, y: y - 1, vx: (Math.random() - 0.5) * 1.6, vy: 0.6 + Math.random() * 1.4, g: -0.02, life: 14 + Math.random() * 12, color: cols[i % 3], rgb: '255,150,70', size: Math.random() < 0.3 ? 2 : 1 });
+    }
+  }
+  // 공중에서 벽·천장에 부딪힌 자리의 작은 불똥 (dir: 튕겨 나가는 방향, 0이면 천장)
+  function bumpSparks(x, y, dir) {
+    for (let i = 0; i < 6; i++) {
+      const vx = dir ? dir * (0.4 + Math.random() * 1.2) : (Math.random() - 0.5) * 2;
+      const vy = dir ? (Math.random() - 0.7) * 1.4 : 0.3 + Math.random() * 0.8;
+      particle({ x, y: y + (dir ? (Math.random() - 0.5) * 6 : 0), vx, vy, g: 0.08, life: 10 + Math.random() * 8, color: i % 2 ? '#fff2c0' : '#ffd36b', rgb: i % 3 ? null : '255,220,150' });
     }
   }
   const AMB_TARGET = { forest: 16, ramparts: 18, frost: 50, gale: 16, summit: 14 };
@@ -617,9 +646,19 @@
         } else if (o.ch === 'f') Art.drawFlag(v, x, y, G.t, SCREENS[s].wind, SCREENS[s].gust ? gustFactor(world.t) : 1);
         else if (o.ch === 'G') {
           Art.drawBeacon(v, x, y, G.t, lit > 0);
+          const full = lit > 0 && G.ending && G.ending.full;
           lights.push(lit > 0
-            ? { x: x + 8, y: y - 6, r: 90 + 380 * lit, glow: 0.55 * Math.min(1, lit * 2), rgb: '255,200,110' }
+            ? { x: x + 8, y: y - 6, r: 90 + (full ? 460 : 380) * lit, glow: (full ? 0.75 : 0.55) * Math.min(1, lit * 2), rgb: '255,200,110' }
             : { x: x + 8, y: y - 6, r: 26, glow: 0.08, rgb: '150,170,230' });
+          // 불티를 모두 모았으면 다섯 알이 등대 둘레를 돈다
+          if (full) {
+            for (let k = 0; k < TOTAL_SPARKS; k++) {
+              const a = G.t * 0.02 + (k / TOTAL_SPARKS) * Math.PI * 2, rr = 26 * lit;
+              const sx = x + 8 + Math.cos(a) * rr, sy = y - 6 + Math.sin(a) * rr * 0.45;
+              Art.drawSpark(v, Math.round(sx - 8), Math.round(sy - 8), G.t + k * 13);
+              lights.push({ x: sx, y: sy, r: 20, glow: 0.3 * lit, rgb: '255,210,120' });
+            }
+          }
         }
       }
     }
@@ -638,19 +677,24 @@
     else f = Math.floor(G.t / 45) % 2 ? 'idle1' : 'idle0';
     const left = p.facing < 0, ch = p.charging ? p.charge / P.CHARGE_FRAMES : 0;
     const px = Math.round(p.x), py = Math.round(p.y - camY);
-    const tremble = ch > 0.7 && G.t % 4 < 2 ? 1 : 0;
+    // 최대 차지 직전(곧 저절로 뛴다): 떨림을 키우고 랜턴을 맥박치듯 밝힌다
+    const full = ch >= 0.85;
+    const tremble = full ? (G.t % 2 ? 1 : -1) : ch > 0.7 && G.t % 4 < 2 ? 1 : 0;
     v.drawImage(Art.lumi[f][left ? 1 : 0], px - 4 + tremble, py - 3);
 
     let lx = left ? p.x + 1 : p.x + 9, ly = p.y + 9 - camY;
     if (f === 'crouch') ly += 3;
     if (f === 'splat') { lx = left ? p.x - 1 : p.x + 11; ly = p.y + 12 - camY; }
     const flick = Math.sin(G.t * 0.23) * 2 + Math.sin(G.t * 0.07) * 2;
-    lights.push({ x: lx, y: ly, r: 72 + ch * 30 + flick, glow: 0.2 + ch * 0.25, rgb: '255,190,90' });
+    // 불티를 하나 모을 때마다 랜턴이 비추는 거리가 4px씩 넓어진다
+    const sparkR = Object.keys(G.collected).length * 4;
+    const pulse = full ? 6 + Math.sin(G.t * 0.8) * 4 : 0;
+    lights.push({ x: lx, y: ly, r: 72 + sparkR + ch * 30 + flick + pulse, glow: 0.2 + ch * 0.25 + (full ? 0.2 : 0), rgb: '255,190,90' });
 
     if (p.charging) {
       const gx = px - 2, gy = py - 7 + 3;
       v.fillStyle = 'rgba(20,14,30,.85)'; v.fillRect(gx - 1, gy - 1, 16, 4);
-      v.fillStyle = ch > 0.7 ? '#ff9a4a' : '#ffd36b';
+      v.fillStyle = full ? (G.t % 4 < 2 ? '#fff2c0' : '#ff9a4a') : ch > 0.7 ? '#ff9a4a' : '#ffd36b';
       v.fillRect(gx, gy, Math.max(1, Math.round(14 * ch)), 2);
     }
     if (p.splat > 0) {
@@ -930,7 +974,7 @@
     const e = G.ending;
     if (e.t < E_IGNITE) return;
     const idx = Math.floor((e.t - E_IGNITE) / E_LINE), local = (e.t - E_IGNITE) % E_LINE;
-    const line = ENDING[idx];
+    const line = e.lines[idx];
     if (!line) return;
     const a = Math.min(1, local / 30) * Math.min(1, (E_LINE - local) / 30);
     const g = ctx.createLinearGradient(0, 200, 0, VH);

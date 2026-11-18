@@ -364,17 +364,21 @@
     { text: '손잡이는 아직 따뜻했다.', beacon: false, lumi: true },
   ];
 
+  // sparks: true 인 줄은 불티를 모두 모아 올라왔을 때만 나온다
   const ENDING = [
     { text: '불씨가 별등대의 재 위에 내려앉았다.' },
+    { text: '랜턴을 기울이자 오르는 길에 주워 담은 불티 다섯 알이 뒤따라 떨어졌다.', sparks: true },
     { text: '쉰 해 동안 식어 있던 돌이 먼저 데워졌다. 빛은 그다음에 났다.' },
     { text: '빛은 첨탑을 지나고 서리 동굴의 얼음을 지나, 무너진 성벽의 홈마다 고였다.' },
     { who: KOR, text: '까악. 보이나, 등불지기. 네 랜턴이 올라왔다.' },
     { text: '아랫마을에서 누군가 빗장을 풀고 창문을 열었다.' },
+    { text: '등불지기의 집 창턱까지 빛이 닿았다. 마른 솔잎 한 줌이 거기 놓여 있었다.', sparks: true },
     { text: '루미는 빈 랜턴을 들어 보았다. 손잡이가 아직 따뜻했다.' },
   ];
 
   // 크게 떨어졌을 때(한 화면 높이 이상) 화면 아래에 뜨는 한마디. 순서대로 돌아가며 나온다.
   // 코르의 말은 코르를 한 번 만난 뒤부터 나온다.
+  // zone이 붙은 줄은 그 구역에서 떨어지기 시작했을 때만 섞여 나온다.
   const FALL_LINES = [
     { who: LUMI, text: '…괜찮아. 랜턴은 안 꺼졌어.' },
     { who: KOR, text: '까악. 봤다. 약속대로 제일 먼저.' },
@@ -386,6 +390,12 @@
     { who: KOR, text: '탑은 안 도망간다, 꼬마.' },
     { who: LUMI, text: '조금 덜 누를걸. 아니, 조금 더.' },
     { who: KOR, text: '등불지기도 그 자리에서 한 번 미끄러졌지.' },
+    { who: LUMI, zone: 'frost', text: '할머니가 반대쪽으로 버티랬는데.' },
+    { who: KOR, zone: 'frost', text: '서리 동굴은 내려가는 길만 친절하지.' },
+    { who: LUMI, zone: 'frost', text: '얼음 위에선 멈춘 줄 알았어.' },
+    { who: LUMI, zone: 'gale', text: '깃발이 늘어질 때까지 기다릴걸.' },
+    { who: KOR, zone: 'gale', text: '바람이 너를 날개 달린 줄 알았나 보다.' },
+    { who: KOR, zone: 'gale', text: '나도 여기서 몇 번 굴렀다. 날개가 있는데도.' },
   ];
 
   return { ZONES, SCREENS, INTRO, ENDING, FALL_LINES };
